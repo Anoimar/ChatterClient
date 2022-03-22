@@ -6,8 +6,8 @@ import io.ktor.client.features.websocket.*
 import io.ktor.http.*
 import io.ktor.http.cio.websocket.*
 import kotlinx.coroutines.*
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.channels.consumeEach
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
@@ -21,7 +21,7 @@ internal expect var client: HttpClient?
 
 class AppApi {
 
-     private val msgChannel: Channel<String> = Channel(3)
+     private val msgFlow = MutableStateFlow("")
      private var myNickname: String? = null
 
 
@@ -32,36 +32,38 @@ class AppApi {
 
      fun chat(callback: (String, String, Boolean) -> Unit) {
           GlobalScope.launch(ApplicationDispatcher) {
-                    initializedClient.ws(
-                         method = HttpMethod.Get,
-                         host = "url",
-                         port = 8080,
-                         path = "/companion")  {
-                         launch {
-                              outputMessages()
+               msgFlow.collect {
+                    when {
+                         it.isEmpty() -> {}
+                         it.startsWith(SERVER_WELCOME) -> {
+                              myNickname = it.substringAfter("know as ")
                          }
-                         msgChannel.consumeEach {
-                              if (it.startsWith(SERVER_WELCOME)) {
-                                   myNickname = it.substringAfter("know as ")
-                              } else {
-                                  Json.decodeFromString<MessageModel>(it).run {
-                                       callback(from,content,from == myNickname)
-                                  }
+                         else -> {
+                              Json.decodeFromString<MessageModel>(it).run {
+                                   callback(from, content, from == myNickname)
                               }
                          }
-//                         val inputJob = launch {
-//                              inputMessages()
-//                         }
-//                         inputJob.join()
-//                         outputJob.cancelAndJoin()
+                    }
+               }
+          }
+          GlobalScope.launch(ApplicationDispatcher) {
+               initializedClient.ws(
+                    method = HttpMethod.Get,
+                    host = "192.168.1.29",
+                    port = 8080,
+                    path = "/companion"
+               ) {
+                    outputMessages()
                }
           }
      }
+
+
      private suspend fun DefaultClientWebSocketSession.outputMessages() {
           try {
                for (msg in incoming) {
                     val newMsg = msg as? Frame.Text ?: continue
-                    msgChannel.send(newMsg.readText())
+                    msgFlow.value = newMsg.readText()
                }
           } catch (e: Exception) {
                println("Exception on output message " + e.message)
@@ -70,7 +72,6 @@ class AppApi {
 
      suspend fun DefaultClientWebSocketSession.inputMessages() {
           while (true) {
-               delay(5000)
                ("Hello").let { msg ->
                     if (msg.toLowerCase() == "quit") return
                     try {
@@ -86,8 +87,7 @@ class AppApi {
      companion object {
           const val SERVER_WELCOME = "You are connected!"
      }
-
 }
 @Serializable
-data class MessageModel(val from : String ,val content: String)
+data class MessageModel(val from : String ,val content: String, val timeStamp: String)
 
